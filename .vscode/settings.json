@@ -1,0 +1,8 @@
+{
+    "cmake.sourceDirectory": "D:/Downloads/nhom01-master/nhungnhom02-master",
+    "idf.currentSetup": "D:/Downloads/Espressif/frameworks/esp-idf-v5.4.2/",
+    "idf.openOcdConfigs": [
+        "interface/ftdi/esp32_devkitj_v1.cfg",
+        "target/esp32.cfg"
+    ]
+}
