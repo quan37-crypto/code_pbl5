@@ -20,13 +20,14 @@ static const char *TAG = "SMART_FARM_FULL";
 #define RELAY_FAN_PIN       GPIO_NUM_25 
 #define RELAY_PUMP_PIN      GPIO_NUM_26 
 #define RELAY_HEATER_PIN    GPIO_NUM_27  // Đèn sưởi lò ấp (Hysteresis)
-#define RELAY_LIGHT_PIN     GPIO_NUM_14  // Đèn chiếu sáng chuồng (LDR)
+#define RELAY_LIGHT_PIN     GPIO_NUM_33  // Đèn chiếu sáng chuồng (LDR)
 #define SERVO_FEED_PIN      GPIO_NUM_19  // Động cơ Servo mở máng ăn (PWM)
 
 #define FIRE_GAS_SENSOR_PIN GPIO_NUM_2   // Cảm biến Lửa / Khí Gas MQ-2 (Active Low: 0 = Có cháy)
 #define BUZZER_PIN          GPIO_NUM_23    
 #define WATER_POWER_PIN     GPIO_NUM_18
 #define WATER_SIGNAL_PIN    GPIO_NUM_35
+#define WATER_ADC_CHANNEL   ADC_CHANNEL_7 // GPIO_NUM_35 (Kênh ADC đọc cảm biến nước)
 #define LDR_ADC_CHANNEL     ADC_CHANNEL_6 // GPIO_NUM_34 (Đọc ADC quang trở LDR)
 
 // Nút nhấn
@@ -41,10 +42,10 @@ static const char *TAG = "SMART_FARM_FULL";
 #define MAX_PUMP_TIME       120   // Bảo vệ bơm tối đa 120s
 #define FEED_INTERVAL_SEC   15   // Chu kỳ cho ăn tự động (ví dụ: 300s = 5 phút/lần khi test mô hình)
 #define FEED_DURATION_SEC   5     // Thời gian mở máng xả thức ăn (5 giây)
-#define TEMP_FAN_THRESHOLD  38.0f // Ngưỡng bật quạt làm mát chuồng
+#define TEMP_FAN_THRESHOLD  34.0f // Ngưỡng bật quạt làm mát chuồng
 #define TEMP_INCUBATOR_SET  37.5f // Nhiệt độ chuẩn lò ấp
 #define TEMP_HYSTERESIS     0.5f  // Dải trễ Hysteresis (+/- 0.5 độ C)
-#define LDR_DARK_THRESHOLD  2000  // Ngưỡng ADC nhận biết trời tối (0 - 4095)
+#define LDR_DARK_THRESHOLD  3200  // Ngưỡng ADC nhận biết trời tối (0 - 4095)
 
 typedef struct {
     float temp, hum;
@@ -145,7 +146,7 @@ void init_hardware(void) {
         .atten = ADC_ATTEN_DB_12,
     };
     adc_oneshot_config_channel(adc1_handle, LDR_ADC_CHANNEL, &config);
-
+    adc_oneshot_config_channel(adc1_handle, WATER_ADC_CHANNEL, &config);
     // Cấu hình Nút nhấn 32, 15 (Polling)
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << BTN_FAN_PIN) | (1ULL << BTN_PUMP_PIN),
@@ -178,11 +179,14 @@ void system_control_task(void *pvParameters) {
 
         // Xử lý chuyển chế độ Auto / Manual
         if (mode_interrupted) {
-            current_state.is_manual_mode = !current_state.is_manual_mode;
-            current_state.fan_state = false;
-            current_state.pump_state = false;
-            current_state.pump_emergency_stop = false;
-            pump_timer_sec = 0;
+            vTaskDelay(pdMS_TO_TICKS(50)); // Chờ 50ms lọc nhiễu tia lửa điện của Relay/Motor
+            if (gpio_get_level(BTN_MODE_PIN) == 0) { // Xác nhận nút thực sự đang được nhấn
+                current_state.is_manual_mode = !current_state.is_manual_mode;
+                current_state.fan_state = false;
+                current_state.pump_state = false;
+                current_state.pump_emergency_stop = false;
+                pump_timer_sec = 0;
+            }
             mode_interrupted = false; 
         }
 
@@ -194,11 +198,14 @@ void system_control_task(void *pvParameters) {
         }
 
         gpio_set_level(WATER_POWER_PIN, 1);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        current_state.is_water_low = (gpio_get_level(WATER_SIGNAL_PIN) == 0);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        int water_adc = 0;
+        adc_oneshot_read(adc1_handle, WATER_ADC_CHANNEL, &water_adc);
+        current_state.is_water_low = (water_adc < 600); // Dưới 600 là Cạn, từ 600 trở lên là Đầy
         gpio_set_level(WATER_POWER_PIN, 0);
 
         adc_oneshot_read(adc1_handle, LDR_ADC_CHANNEL, &current_state.ldr_value);
+        printf("Gia tri LDR hien tai: %d\n", current_state.ldr_value);
         current_state.fire_detected = (gpio_get_level(FIRE_GAS_SENSOR_PIN) == 0);
 
         // --- LUỒNG GIÁM SÁT AN TOÀN & LIÊN ĐỘNG KHẨN CẤP (Mục 2.3.1.4) ---
@@ -211,10 +218,10 @@ void system_control_task(void *pvParameters) {
 
             // Kích hoạt bơm dập lửa và còi Buzzer
             current_state.pump_state = true;
-            gpio_set_level(RELAY_FAN_PIN, 0);
-            gpio_set_level(RELAY_HEATER_PIN, 0);
-            gpio_set_level(RELAY_LIGHT_PIN, 0);
-            gpio_set_level(RELAY_PUMP_PIN, 1);
+            gpio_set_level(RELAY_FAN_PIN, 1);
+            gpio_set_level(RELAY_HEATER_PIN, 1);
+            gpio_set_level(RELAY_LIGHT_PIN, 1);
+            gpio_set_level(RELAY_PUMP_PIN, 0);
             gpio_set_level(BUZZER_PIN, 1);
         } else {
             // --- XỬ LÝ 5 PHÂN HỆ KHI BÌNH THƯỜNG ---
@@ -254,10 +261,10 @@ void system_control_task(void *pvParameters) {
             }
 
             // Xuất tín hiệu ra Relay
-            gpio_set_level(RELAY_FAN_PIN, current_state.fan_state);
-            gpio_set_level(RELAY_PUMP_PIN, current_state.pump_state);
-            gpio_set_level(RELAY_HEATER_PIN, current_state.heater_state);
-            gpio_set_level(RELAY_LIGHT_PIN, current_state.light_state);
+            gpio_set_level(RELAY_FAN_PIN, !current_state.fan_state);
+            gpio_set_level(RELAY_PUMP_PIN, !current_state.pump_state);
+            gpio_set_level(RELAY_HEATER_PIN, !current_state.heater_state);
+            gpio_set_level(RELAY_LIGHT_PIN, !current_state.light_state);
 
             // --- ĐẾM ĐỊNH THỜI 1 GIÂY (Cho ăn & Bảo vệ bơm) ---
             if (timer_tick_1s) {
@@ -285,7 +292,7 @@ void system_control_task(void *pvParameters) {
             if (pump_timer_sec >= MAX_PUMP_TIME) {
                 current_state.pump_emergency_stop = true;
                 current_state.pump_state = false;
-                gpio_set_level(RELAY_PUMP_PIN, 0);
+                gpio_set_level(RELAY_PUMP_PIN, 1    );
             }
             if (!current_state.is_water_low && !current_state.pump_state) {
                 current_state.pump_emergency_stop = false;
