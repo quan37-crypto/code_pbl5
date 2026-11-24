@@ -34,15 +34,21 @@ static const char *TAG = "SMART_FARM_FULL";
 #define BTN_MODE_PIN        GPIO_NUM_13 
 #define BTN_FAN_PIN         GPIO_NUM_32 
 #define BTN_PUMP_PIN        GPIO_NUM_15 
+// Nút nhấn
+#define BTN_MODE_PIN        GPIO_NUM_13 
+#define BTN_FAN_PIN         GPIO_NUM_32 
+#define BTN_PUMP_PIN        GPIO_NUM_15 
+#define BTN_LIGHT_PIN       GPIO_NUM_17 // Thêm nút Đèn chiếu sáng
+#define BTN_HEATER_PIN      GPIO_NUM_16 // Thêm nút Đèn sưởi
 
 #define I2C_MASTER_NUM      I2C_NUM_0
 #define LCD_ADDR            0x27 
 
 // --- CÁC NGƯỠNG ĐIỀU KHIỂN (THRESHOLDS & HYSTERESIS) ---
-#define MAX_PUMP_TIME       120   // Bảo vệ bơm tối đa 120s
-#define FEED_INTERVAL_SEC   15   // Chu kỳ cho ăn tự động (ví dụ: 300s = 5 phút/lần khi test mô hình)
+#define MAX_PUMP_TIME       60   // Bảo vệ bơm tối đa 60s
+#define FEED_INTERVAL_SEC   30   // Chu kỳ cho ăn tự động (ví dụ: 300s = 5 phút/lần khi test mô hình)
 #define FEED_DURATION_SEC   5     // Thời gian mở máng xả thức ăn (5 giây)
-#define TEMP_FAN_THRESHOLD  34.0f // Ngưỡng bật quạt làm mát chuồng
+#define TEMP_FAN_THRESHOLD  32.0f // Ngưỡng bật quạt làm mát chuồng
 #define TEMP_INCUBATOR_SET  37.5f // Nhiệt độ chuẩn lò ấp
 #define TEMP_HYSTERESIS     0.5f  // Dải trễ Hysteresis (+/- 0.5 độ C)
 #define LDR_DARK_THRESHOLD  3200  // Ngưỡng ADC nhận biết trời tối (0 - 4095)
@@ -147,9 +153,9 @@ void init_hardware(void) {
     };
     adc_oneshot_config_channel(adc1_handle, LDR_ADC_CHANNEL, &config);
     adc_oneshot_config_channel(adc1_handle, WATER_ADC_CHANNEL, &config);
-    // Cấu hình Nút nhấn 32, 15 (Polling)
+    // Cấu hình Nút nhấn 32, 15, 17, 16 (Polling)
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << BTN_FAN_PIN) | (1ULL << BTN_PUMP_PIN),
+        .pin_bit_mask = (1ULL << BTN_FAN_PIN) | (1ULL << BTN_PUMP_PIN) | (1ULL << BTN_LIGHT_PIN) | (1ULL << BTN_HEATER_PIN),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -173,7 +179,7 @@ void init_hardware(void) {
 
 // --- 4. TASK ĐIỀU KHIỂN ĐA PHÂN HỆ ---
 void system_control_task(void *pvParameters) {
-    bool last_f_btn = 1, last_p_btn = 1;
+    bool last_f_btn = 1, last_p_btn = 1 , last_l_btn = 1, last_h_btn = 1;
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
@@ -229,11 +235,17 @@ void system_control_task(void *pvParameters) {
                 // Chế độ Thủ công (Manual)
                 bool f_btn = gpio_get_level(BTN_FAN_PIN);
                 bool p_btn = gpio_get_level(BTN_PUMP_PIN);
+                bool l_btn = gpio_get_level(BTN_LIGHT_PIN);
+                bool h_btn = gpio_get_level(BTN_HEATER_PIN);
+
                 if (last_f_btn == 1 && f_btn == 0) current_state.fan_state = !current_state.fan_state;
                 if (last_p_btn == 1 && p_btn == 0) current_state.pump_state = !current_state.pump_state;
+                if (last_l_btn == 1 && l_btn == 0) current_state.light_state = !current_state.light_state;
+                if (last_h_btn == 1 && h_btn == 0) current_state.heater_state = !current_state.heater_state;
                 last_f_btn = f_btn; 
                 last_p_btn = p_btn;
-
+                last_l_btn = l_btn; 
+                last_h_btn = h_btn;
                 if (current_state.pump_emergency_stop) {
                     current_state.pump_state = false;
                 }
@@ -300,7 +312,7 @@ void system_control_task(void *pvParameters) {
             }
 
             // Buzzer kêu nếu bơm bị lỗi quá tải thời gian
-            gpio_set_level(BUZZER_PIN, current_state.pump_emergency_stop ? 1 : 0);
+            gpio_set_level(BUZZER_PIN, 0);
         }
 
         current_state.pump_time_left = MAX_PUMP_TIME - pump_timer_sec;
